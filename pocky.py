@@ -8,6 +8,7 @@ import shutil
 
 from enum import Enum
 from typing import List
+from bindings import overlay_mount
 
 POCKY_DIR = "./"
 IMG_PREFIX = "img"
@@ -28,9 +29,29 @@ def run(params: List[str]):
     if not image_id_exists(img_id):
         print("Provided image id does not exist.")
         exit(1)
+    
+    img_dir = '_'.join([IMG_PREFIX, img_id])
+    img_path = os.path.join(POCKY_DIR, img_dir)
 
     cmd = " ".join(params[1:])
+
     ps_uuid = '_'.join([PS_PREFIX, str(uuid.uuid4())])
+    ps_path = os.path.join(POCKY_DIR, ps_uuid)
+
+    fs = os.path.join(ps_path, "fs")
+    mnt = os.path.join(ps_path, "fs/mnt")
+    upperdir = os.path.join(ps_path, "fs/upperdir")
+    workdir = os.path.join(ps_path, "fs/workdir")
+
+    os.mkdir(ps_path)
+    os.mkdir(fs)
+    os.mkdir(mnt)
+    os.mkdir(upperdir)
+    os.mkdir(workdir)
+
+    mount_opts = f"lowerdir={str(img_path)},upperdir={str(upperdir)},workdir={str(workdir)}"
+    overlay_mount(str(mnt), mount_opts)
+    exit(0)
 
     print("Running:", ' '.join(params))
     result = subprocess.run(params)
@@ -40,6 +61,7 @@ def build(id: str, dir_path: os.path):
     if not os.path.isdir(dir_path):
         print("Provided directory does not exist.")
         exit(1)
+    
 
 # Lists existing images and their source
 def images():
