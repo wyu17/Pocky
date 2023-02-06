@@ -51,10 +51,9 @@ def run(params: List[str]):
 
     mount_opts = f"lowerdir={str(img_path)},upperdir={str(upperdir)},workdir={str(workdir)}"
     overlay_mount(str(mnt), mount_opts)
-    exit(0)
 
     print("Running:", ' '.join(params))
-    result = subprocess.run(params)
+    result = subprocess.Popen(str(os.path.join(mnt, cmd)), shell=True)
     return
 
 def build(id: str, dir_path: os.path):
