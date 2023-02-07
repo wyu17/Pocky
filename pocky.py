@@ -8,7 +8,7 @@ import shutil
 
 from enum import Enum
 from typing import List
-from bindings import overlay_mount
+from bindings import overlay_mount, proc_mount, unshare
 
 MANIFEST = "manifest.json"
 POCKY_DIR = "./"
@@ -21,6 +21,12 @@ CMD_FILE = "cmd.txt"
 
 DEFAULT_CPU = 512
 DEFAULT_MEMORY = 512 * 1000000
+
+CLONE_NEWUTS = 0x04000000
+CLONE_NEWPID = 0x20000000	
+# Mount namespace
+CLONE_NEWNS	= 0x00020000
+CLONE_NEWIPC = 0x08000000
 
 class Cmd(Enum):
     RUN = "run"
@@ -59,17 +65,15 @@ def run(params: List[str]):
     with open(os.path.join(ps_path, CMD_FILE), "w+") as f:
         f.write(' '.join(params[1:]))
 
-
     # Remove image files from mounted container
     for img_file in [MANIFEST, SRC_FILE, CONFIG, "repositories"]:
         os.path.join(mnt, img_file)
 
-
     print("Running:", ' '.join(params), "as", ps_id)
 
-    def preexec_fn(): 
-        print(os.getpid())
-
+    unshare(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS)
+    pid = os.fork()
+    if pid == 0:
         # Create cgroup dirs
         for hierarchy in ["cpu", "cpuacct", "memory"]:
             cgroup = os.path.join(BASE_CGROUPS, hierarchy, ps_id)
@@ -90,9 +94,13 @@ def run(params: List[str]):
         os.chroot(mnt)
         os.chdir(mnt)
 
-    result = subprocess.Popen([f"./{params[1]}"] + params[2:], preexec_fn=preexec_fn)
-    result.wait()
+        if not os.path.isdir("/proc"):
+            os.mkdir("/proc")
+        proc_mount()
 
+        os.execvp(params[1], params[1:])
+    else:
+        os.wait()
 
 def ps():
     print(f'{"Container Id" :<40} {"Image" :<30} {"Cmd" :<30}')
