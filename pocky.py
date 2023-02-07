@@ -16,6 +16,8 @@ IMG_PREFIX = "img"
 PS_PREFIX = "ps"
 SRC_FILE = "src.txt"
 BASE_CGROUPS = '/sys/fs/cgroup'
+CONFIG = "config.json"
+CMD_FILE = "cmd.txt"
 
 DEFAULT_CPU = 512
 DEFAULT_MEMORY = 512 * 1000000
@@ -24,6 +26,7 @@ class Cmd(Enum):
     RUN = "run"
     PULL = "pull"
     IMAGES = "images"
+    PS = "ps"
 
 def image_id_exists(id: str):
     img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith("_".join([IMG_PREFIX, id]))]
@@ -51,9 +54,16 @@ def run(params: List[str]):
     mount_opts = f"lowerdir={str(img_path)},upperdir={str(upperdir)},workdir={str(workdir)}"
     overlay_mount(str(mnt), mount_opts)
 
+    #Copy over source and cmd metadata
+    shutil.copyfile(os.path.join(img_path, SRC_FILE), os.path.join(ps_path, SRC_FILE))
+    with open(os.path.join(ps_path, CMD_FILE), "w+") as f:
+        f.write(' '.join(params[1:]))
+
+
     # Remove image files from mounted container
-    for img_file in [MANIFEST, SRC_FILE, "repositories"]:
+    for img_file in [MANIFEST, SRC_FILE, CONFIG, "repositories"]:
         os.path.join(mnt, img_file)
+
 
     print("Running:", ' '.join(params), "as", ps_id)
 
@@ -83,9 +93,25 @@ def run(params: List[str]):
     result = subprocess.Popen([f"./{params[1]}"] + params[2:], preexec_fn=preexec_fn)
     result.wait()
 
+
+def ps():
+    print(f'{"Container Id" :<40} {"Image" :<30} {"Cmd" :<30}')
+    ps_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith(PS_PREFIX)]
+    for ps_dir in ps_dirs:
+        with open(os.path.join(BASE_CGROUPS, "cpu", ps_dir, "cgroup.procs"), "r") as f:
+            contents = f.read()
+    
+        if contents:
+            container_id = ps_dir.split("_")[1]
+            with open(os.path.join(ps_dir, SRC_FILE), "r") as f:
+                image = f.read()
+            with open(os.path.join(ps_dir, CMD_FILE), "r") as f:
+                cmd = f.read()
+            print(f'{container_id :<40} {image :<30} {cmd :<30}')
+
 # Lists existing images and their source
 def images():
-    print("Image \t\t\t\t\t Source")
+    print("Container \t\t\t\t\t Image \t")
     img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith(IMG_PREFIX)]
     for dir in img_dirs:
         with open(os.path.join(dir, SRC_FILE), "r") as file:
@@ -125,7 +151,7 @@ def pull(params: List[str]):
         tar.close()
         shutil.rmtree(layer_path)
 
-    os.rename(os.path.join(pull_path, manifest_json[0]["Config"]), os.path.join(pull_path, "config.json"))
+    os.rename(os.path.join(pull_path, manifest_json[0]["Config"]), os.path.join(pull_path, CONFIG))
 
     with open(os.path.join(pull_path, SRC_FILE), "w") as file:
         file.write(src)
@@ -142,6 +168,8 @@ def main():
         pull(sys.argv[2:])
     elif cmd == Cmd.IMAGES.value:
         images()
+    elif cmd == Cmd.PS.value:
+        ps()
     else:
         print("Invalid command: please try again.")
 
