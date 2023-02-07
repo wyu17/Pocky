@@ -10,10 +10,15 @@ from enum import Enum
 from typing import List
 from bindings import overlay_mount
 
+MANIFEST = "manifest.json"
 POCKY_DIR = "./"
 IMG_PREFIX = "img"
 PS_PREFIX = "ps"
 SRC_FILE = "src.txt"
+BASE_CGROUPS = '/sys/fs/cgroup'
+
+DEFAULT_CPU = 512
+DEFAULT_MEMORY = 512 * 1000000
 
 class Cmd(Enum):
     RUN = "run"
@@ -30,37 +35,53 @@ def run(params: List[str]):
         print("Provided image id does not exist.")
         exit(1)
     
-    img_dir = '_'.join([IMG_PREFIX, img_id])
-    img_path = os.path.join(POCKY_DIR, img_dir)
+    img_path = os.path.join(POCKY_DIR, '_'.join([IMG_PREFIX, img_id]))
 
-    cmd = " ".join(params[1:])
-
-    ps_uuid = '_'.join([PS_PREFIX, str(uuid.uuid4())])
-    ps_path = os.path.join(POCKY_DIR, ps_uuid)
+    ps_id = '_'.join([PS_PREFIX, str(uuid.uuid4())])
+    ps_path = os.path.join(POCKY_DIR, ps_id)
 
     fs = os.path.join(ps_path, "fs")
     mnt = os.path.join(ps_path, "fs/mnt")
     upperdir = os.path.join(ps_path, "fs/upperdir")
     workdir = os.path.join(ps_path, "fs/workdir")
 
-    os.mkdir(ps_path)
-    os.mkdir(fs)
-    os.mkdir(mnt)
-    os.mkdir(upperdir)
-    os.mkdir(workdir)
+    for dir in [ps_path, fs, mnt, upperdir, workdir]:
+        os.mkdir(dir)
 
     mount_opts = f"lowerdir={str(img_path)},upperdir={str(upperdir)},workdir={str(workdir)}"
     overlay_mount(str(mnt), mount_opts)
 
-    print("Running:", ' '.join(params))
-    result = subprocess.Popen(str(os.path.join(mnt, cmd)), shell=True)
-    return
+    # Remove image files from mounted container
+    for img_file in [MANIFEST, SRC_FILE, "repositories"]:
+        os.path.join(mnt, img_file)
 
-def build(id: str, dir_path: os.path):
-    if not os.path.isdir(dir_path):
-        print("Provided directory does not exist.")
-        exit(1)
-    
+    print("Running:", ' '.join(params), "as", ps_id)
+
+    def preexec_fn(): 
+        print(os.getpid())
+
+        # Create cgroup dirs
+        for hierarchy in ["cpu", "cpuacct", "memory"]:
+            cgroup = os.path.join(BASE_CGROUPS, hierarchy, ps_id)
+            if not os.path.exists(cgroup):
+                os.mkdir(cgroup)
+
+            # Write current process into cgroups
+            with open(f"/sys/fs/cgroup/{hierarchy}/{ps_id}/cgroup.procs", "a+") as f:
+                f.write(f'{str(os.getpid())}\n')
+
+        # Set cpu and memory limits
+        with open(f"/sys/fs/cgroup/cpu/{ps_id}/cpu.shares", "w+") as f:
+            f.write(f'{DEFAULT_CPU}\n')
+
+        with open(f"/sys/fs/cgroup/memory/{ps_id}/memory.limit_in_bytes", "w+") as f:
+            f.write(f'{DEFAULT_MEMORY}\n')
+
+        os.chroot(mnt)
+        os.chdir(mnt)
+
+    result = subprocess.Popen([f"./{params[1]}"] + params[2:], preexec_fn=preexec_fn)
+    result.wait()
 
 # Lists existing images and their source
 def images():
@@ -86,7 +107,7 @@ def pull(params: List[str]):
     
     subprocess.check_call(["./scripts/download-frozen-image-v2.sh", str(pull_path), src])
 
-    manifest_path = os.path.join(pull_path, "manifest.json")
+    manifest_path = os.path.join(pull_path, MANIFEST)
     with open(manifest_path) as manifest:
         manifest_json = json.loads(manifest.read())
 
@@ -104,12 +125,10 @@ def pull(params: List[str]):
         tar.close()
         shutil.rmtree(layer_path)
 
-    os.remove(os.path.join(pull_path, manifest_json[0]["Config"]))
+    os.rename(os.path.join(pull_path, manifest_json[0]["Config"]), os.path.join(pull_path, "config.json"))
 
     with open(os.path.join(pull_path, SRC_FILE), "w") as file:
         file.write(src)
-
-    build(pull_uuid, pull_path)
 
 def main():
     if len(sys.argv) <= 1:
