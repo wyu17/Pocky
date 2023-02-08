@@ -5,10 +5,11 @@ import uuid
 import json
 import tarfile
 import shutil
+import signal
 
 from enum import Enum
 from typing import List
-from bindings import overlay_mount, proc_mount, unshare
+from bindings import overlay_mount, proc_mount, unshare, umount
 
 # String constants
 MANIFEST = "manifest.json"
@@ -19,6 +20,7 @@ SRC_FILE = "src.txt"
 BASE_CGROUPS = '/sys/fs/cgroup'
 CONFIG = "config.json"
 CMD_FILE = "cmd.txt"
+PID_FILE = "pid.txt"
 
 # Default resource limits
 DEFAULT_CPU = 512
@@ -33,11 +35,16 @@ CLONE_NEWPID = 0x20000000
 CLONE_NEWNS	= 0x00020000
 CLONE_NEWIPC = 0x08000000
 
+# Supported cpu cgroup hierarchies
+HIERARCHIES = ["cpuacct", "cpu", "memory", "pids"]
+
 class Cmd(Enum):
     RUN = "run"
     PULL = "pull"
     IMAGES = "images"
     PS = "ps"
+    RM = "rm"
+    RMI = "rmi"
 
 def image_id_exists(id: str):
     img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith("_".join([IMG_PREFIX, id]))]
@@ -52,6 +59,7 @@ def handle_num_input(string: str):
         return numeral
     except ValueError:
         return None
+
 
 def run(params: List[str]): 
     img_id = params[0]
@@ -102,7 +110,7 @@ def run(params: List[str]):
     #Copy over source and cmd metadata
     shutil.copyfile(os.path.join(img_path, SRC_FILE), os.path.join(ps_path, SRC_FILE))
     with open(os.path.join(ps_path, CMD_FILE), "w+") as f:
-        f.write(' '.join(params[1:]))
+        f.write(' '.join(cmd))
 
     # Remove image files from mounted container
     for img_file in [MANIFEST, SRC_FILE, CONFIG, "repositories"]:
@@ -122,7 +130,7 @@ def run(params: List[str]):
             os.environ[split_env[0]] = split_env[1]
 
         # Create cgroup dirs: create a cgroup dir for each hierarchy
-        for hierarchy in ["cpu", "cpuacct", "memory", "pids"]:
+        for hierarchy in HIERARCHIES:
             cgroup = os.path.join(BASE_CGROUPS, hierarchy, ps_id)
             if not os.path.exists(cgroup):
                 os.mkdir(cgroup)
@@ -158,7 +166,60 @@ def run(params: List[str]):
         # Execute the cmd
         os.execvp(cmd[0], cmd)
     else:
+        # Write the pid of the forked process so it can be killed if neccessary
+        with open(os.path.join(ps_path, PID_FILE), "w+") as file:
+            file.write(str(pid))
+
         os.wait()
+        # Clean-up resources and exit
+        rm(ps_id.split("_")[1], suppress_output=True)
+
+# Removes a running container.
+# Suppresses output if called as part of run clean-up
+def rm(id: str, suppress_output: bool = False):
+    ps_id = f'ps_{id}'
+    ps_dir = os.path.join(POCKY_DIR, f'ps_{id}')
+    if not os.path.isdir(ps_dir):
+        if not suppress_output:
+            print("Provided container does not exist.")
+        exit(1)
+
+    try:
+        with open(os.path.join(ps_dir, PID_FILE), "r+") as file:
+            process_pid = int(file.read())
+
+            # Kill the process if it is still running
+            # TODO doesn't handle processes that handle SIGTERM (-f flag)
+            try:
+                os.kill(process_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        # Umount the proc directory so that the overlay mount dir can be unmounted
+        umount(os.path.join(ps_dir, "fs/mnt/proc"))
+        umount(os.path.join(ps_dir, "fs/mnt"))
+        
+        # Remove cgroup hierarchies (cpu + cpuacct are removed together)
+        for hierarchy in HIERARCHIES[1:]:
+            os.rmdir(os.path.join(BASE_CGROUPS, hierarchy, ps_id))
+        shutil.rmtree(ps_dir)
+    
+    # If there was an error, it is either unexpected,
+    # it is because the container was ended manually and this is
+    # being called from run(), or because the process was not killed
+    except OSError as e:
+        if not suppress_output:
+            print("There was an error deleting " + id)
+        return
+
+# Deletes an existing image
+def rmi(id: str):
+    id_dir = os.path.join(POCKY_DIR, f'img_{id}')
+    if not os.path.isdir(id_dir):
+        print("Provided image does not exist.")
+        exit(1)
+
+    shutil.rmtree(id_dir)
 
 def ps():
     print(f'{"Container Id" :<40} {"Image" :<30} {"Cmd" :<30}')
@@ -222,7 +283,7 @@ def pull(params: List[str]):
 
     os.rename(os.path.join(pull_path, manifest_json[0]["Config"]), os.path.join(pull_path, CONFIG))
 
-    with open(os.path.join(pull_path, SRC_FILE), "w") as file:
+    with open(os.path.join(pull_path, SRC_FILE), "w+") as file:
         file.write(src)
 
 def main():
@@ -239,6 +300,10 @@ def main():
         images()
     elif cmd == Cmd.PS.value:
         ps()
+    elif cmd == Cmd.RM.value:
+        rm(sys.argv[2])
+    elif cmd == Cmd.RMI.value:
+        rmi(sys.argv[2])
     else:
         print("Invalid command: please try again.")
 
