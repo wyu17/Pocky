@@ -10,6 +10,7 @@ from enum import Enum
 from typing import List
 from bindings import overlay_mount, proc_mount, unshare
 
+# String constants
 MANIFEST = "manifest.json"
 POCKY_DIR = "./"
 IMG_PREFIX = "img"
@@ -19,12 +20,16 @@ BASE_CGROUPS = '/sys/fs/cgroup'
 CONFIG = "config.json"
 CMD_FILE = "cmd.txt"
 
+# Default resource limits
 DEFAULT_CPU = 512
-DEFAULT_MEMORY = 512 * 1000000
+# In MB
+DEFAULT_MEMORY = 512 * 1000 * 1000
+DEFAULT_PIDS = 512
 
+# Unshare flag constants
 CLONE_NEWUTS = 0x04000000
 CLONE_NEWPID = 0x20000000	
-# Mount namespace
+# NEWNS is the mount namespace
 CLONE_NEWNS	= 0x00020000
 CLONE_NEWIPC = 0x08000000
 
@@ -38,14 +43,47 @@ def image_id_exists(id: str):
     img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith("_".join([IMG_PREFIX, id]))]
     return len(img_dirs) == 1
 
+def handle_num_input(string: str):
+    if not string:
+        return string
+    
+    try:
+        numeral = int(string)
+        return numeral
+    except ValueError:
+        return None
+
 def run(params: List[str]): 
     img_id = params[0]
     if not image_id_exists(img_id):
         print("Provided image id does not exist.")
         exit(1)
     
-    img_path = os.path.join(POCKY_DIR, '_'.join([IMG_PREFIX, img_id]))
+    # Handle user input for cpu/memory/pids
+    cpu_input = handle_num_input(input("CPU shares for container (default 512):"))
+    if not handle_num_input(cpu_input):
+        cpu = DEFAULT_CPU
+    else:
+        cpu = cpu_input
 
+    mem_input = handle_num_input(input("Memory for container in MB (default 512MB):"))
+    if not handle_num_input(cpu_input):
+        mem = DEFAULT_MEMORY
+    else:
+        mem = mem_input
+    
+    pid_input = handle_num_input(input("PIDs for container (default 512):"))
+    if not handle_num_input(pid_input):
+        pids = DEFAULT_PIDS
+    else:
+        pids = pid_input
+
+    img_path = os.path.join(POCKY_DIR, '_'.join([IMG_PREFIX, img_id]))
+    with open(os.path.join(img_path, CONFIG)) as f:
+        config = json.loads(f.read())["config"]
+
+    cmd = params[1:] if params[1:] else config["Cmd"]
+ 
     ps_id = '_'.join([PS_PREFIX, str(uuid.uuid4())])
     ps_path = os.path.join(POCKY_DIR, ps_id)
 
@@ -57,6 +95,7 @@ def run(params: List[str]):
     for dir in [ps_path, fs, mnt, upperdir, workdir]:
         os.mkdir(dir)
 
+    # Create an overlay filesystem using the image dir as a base and an upper dir for writing changes
     mount_opts = f"lowerdir={str(img_path)},upperdir={str(upperdir)},workdir={str(workdir)}"
     overlay_mount(str(mnt), mount_opts)
 
@@ -71,44 +110,66 @@ def run(params: List[str]):
 
     print("Running:", ' '.join(params), "as", ps_id)
 
+    # Create new namespaces for process isolation
     unshare(CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS)
     pid = os.fork()
+
+    # Fork to create a new process in a new PID namespace
     if pid == 0:
-        # Create cgroup dirs
-        for hierarchy in ["cpu", "cpuacct", "memory"]:
+        # Set env vars from config
+        for env in config["Env"]:
+            split_env = env.split('=', 1)
+            os.environ[split_env[0]] = split_env[1]
+
+        # Create cgroup dirs: create a cgroup dir for each hierarchy
+        for hierarchy in ["cpu", "cpuacct", "memory", "pids"]:
             cgroup = os.path.join(BASE_CGROUPS, hierarchy, ps_id)
             if not os.path.exists(cgroup):
                 os.mkdir(cgroup)
 
-            # Write current process into cgroups
+            # Write current process into each cgroup
             with open(f"/sys/fs/cgroup/{hierarchy}/{ps_id}/cgroup.procs", "a+") as f:
                 f.write(f'{str(os.getpid())}\n')
 
-        # Set cpu and memory limits
+        # Set cpu, memory and PID limits
         with open(f"/sys/fs/cgroup/cpu/{ps_id}/cpu.shares", "w+") as f:
-            f.write(f'{DEFAULT_CPU}\n')
+            f.write(f'{cpu}\n')
 
         with open(f"/sys/fs/cgroup/memory/{ps_id}/memory.limit_in_bytes", "w+") as f:
-            f.write(f'{DEFAULT_MEMORY}\n')
+            f.write(f'{mem}\n')
 
+        with open(f"/sys/fs/cgroup/pids/{ps_id}/pids.max", "w+") as f:
+            f.write(f'{pids}\n')
+
+        # Isolate process by changing its root to be the mount point
         os.chroot(mnt)
-        os.chdir(mnt)
 
+        # Change dir to be either the root or the working dir of the image
+        if config["WorkingDir"]:
+            os.chdir(config["WorkingDir"])
+        else:
+            os.chdir(mnt)
+
+        # Mount the proc filesystem
         if not os.path.isdir("/proc"):
             os.mkdir("/proc")
         proc_mount()
 
-        os.execvp(params[1], params[1:])
+        # Execute the cmd
+        os.execvp(cmd[0], cmd)
     else:
         os.wait()
 
 def ps():
     print(f'{"Container Id" :<40} {"Image" :<30} {"Cmd" :<30}')
+    # Get all ps dirs
     ps_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith(PS_PREFIX)]
     for ps_dir in ps_dirs:
+        # For each ps dir: check if the associated cgroup still has a running process
         with open(os.path.join(BASE_CGROUPS, "cpu", ps_dir, "cgroup.procs"), "r") as f:
             contents = f.read()
     
+        # If it does, get the metadata from the ps dir and print
         if contents:
             container_id = ps_dir.split("_")[1]
             with open(os.path.join(ps_dir, SRC_FILE), "r") as f:
