@@ -15,7 +15,7 @@ from bindings import overlay_mount, proc_mount, unshare, umount, bind_mount, set
 
 # String constants
 MANIFEST = "manifest.json"
-POCKY_DIR = "/tmp"
+POCKY_DIR = "/var/pocky"
 IMG_PREFIX = "img"
 PS_PREFIX = "ps"
 SRC_FILE = "src.txt"
@@ -27,8 +27,9 @@ NETNS_FILE = "netns.txt"
 
 # Default resource limits
 DEFAULT_CPU = 512
+MB_TO_BYTES_MULTIPLIER = 1000 * 1000
 # In MB
-DEFAULT_MEMORY = 512 * 1000 * 1000
+DEFAULT_MEMORY = 512 * MB_TO_BYTES_MULTIPLIER
 DEFAULT_PIDS = 512
 
 # Unshare flag constants
@@ -52,7 +53,7 @@ class Cmd(Enum):
     RMI = "rmi"
 
 def image_id_exists(id: str):
-    img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(d) and d.startswith("_".join([IMG_PREFIX, id]))]
+    img_dirs = [d for d in os.listdir(POCKY_DIR) if os.path.isdir(os.path.join(POCKY_DIR, d)) and d.startswith("_".join([IMG_PREFIX, id]))]
     return len(img_dirs) == 1
 
 def handle_num_input(string: str):
@@ -83,10 +84,10 @@ def run(params: List[str]):
         cpu = cpu_input
 
     mem_input = handle_num_input(input("Memory for container in MB (default 512MB):"))
-    if not handle_num_input(cpu_input):
+    if not handle_num_input(mem_input):
         mem = DEFAULT_MEMORY
     else:
-        mem = mem_input
+        mem = mem_input * MB_TO_BYTES_MULTIPLIER
     
     pid_input = handle_num_input(input("PIDs for container (default 512):"))
     if not handle_num_input(pid_input):
@@ -102,7 +103,7 @@ def run(params: List[str]):
  
     ps_id = '_'.join([PS_PREFIX, str(uuid.uuid4())])
     ps_path = os.path.join(POCKY_DIR, ps_id)
-
+    
     fs = os.path.join(ps_path, "fs")
     mnt = os.path.join(ps_path, "fs/mnt")
     upperdir = os.path.join(ps_path, "fs/upperdir")
@@ -196,17 +197,24 @@ def run(params: List[str]):
             with open(f"/sys/fs/cgroup/memory/{ps_id}/memory.limit_in_bytes", "w+") as f:
                 f.write(f'{mem}\n')
 
+            # Writing 0 to swappiness (generally) prevents swap from being utilised
+            # to enforce the memory limit
+            with open(f"/sys/fs/cgroup/memory/{ps_id}/memory.swappiness", "w+") as f:
+                f.write(f'0\n')
+
             with open(f"/sys/fs/cgroup/pids/{ps_id}/pids.max", "w+") as f:
                 f.write(f'{pids}\n')
 
             # Isolate process by changing its root to be the mount point
+            os.chdir(mnt)
             os.chroot(mnt)
 
             # Change dir to be either the root or the working dir of the image
-            if config["WorkingDir"]:
-                os.chdir(config["WorkingDir"])
-            else:
-                os.chdir(mnt)
+            workdir = config["WorkingDir"]
+            if workdir:
+                if not os.path.isdir(workdir):
+                    os.mkdir(workdir)
+                os.chdir(workdir)
 
             # Set the dns server
             if not os.path.isdir("/etc"):
