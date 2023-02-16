@@ -239,16 +239,14 @@ def run(params: List[str]):
     else:
         os.wait()
         # Clean-up resources and exit
-        rm(ps_id.split("_")[1], suppress_output=True)
+        clean_up(ps_id.split("_")[1])
 
-# Removes a running container.
-# Suppresses output if called as part of run clean-up
-def rm(id: str, suppress_output: bool = False):
+# Cleans up the resources created for a container
+def clean_up(id: str):
     ps_id = f'ps_{id}'
     ps_dir = os.path.join(POCKY_DIR, f'ps_{id}')
     if not os.path.isdir(ps_dir):
-        if not suppress_output:
-            print("Provided container does not exist.")
+        print("Provided container does not exist.")
         exit(1)
 
     try:    
@@ -260,16 +258,6 @@ def rm(id: str, suppress_output: bool = False):
             subprocess.run(f"ip link del dev veth0_{netns_id}", shell=True)
             subprocess.run(f"ip netns del netns_{netns_id}", shell=True)
 
-        with open(os.path.join(ps_dir, PID_FILE), "r") as file:
-            process_pid = int(file.read())
-
-            # Kill the process if it is still running
-            # TODO doesn't handle processes that handle SIGTERM (-f flag)
-            try:
-                os.kill(process_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-
         # Umount the proc directory so that the overlay mount dir can be unmounted
         umount(os.path.join(ps_dir, "fs/mnt/proc"))
         umount(os.path.join(ps_dir, "fs/mnt"))
@@ -279,13 +267,8 @@ def rm(id: str, suppress_output: bool = False):
             os.rmdir(os.path.join(BASE_CGROUPS, hierarchy, ps_id))
         shutil.rmtree(ps_dir)
 
-    # If there was an error, it is either unexpected,
-    # it is because the container was ended manually and this is
-    # being called from run(), or because the process was not killed
     except OSError as e:
-        print(e)
-        if not suppress_output:
-            print("There was an error deleting " + id)
+        print("There was an error deleting " + id)
         return
 
 # Deletes an existing image
@@ -297,6 +280,7 @@ def rmi(id: str):
 
     shutil.rmtree(id_dir)
 
+# Lists the containers currently running
 def ps():
     print(f'{"Container Id" :<40} {"Image" :<30} {"Cmd" :<30}')
     # Get all ps dirs
@@ -385,8 +369,6 @@ def main():
         images()
     elif cmd == Cmd.PS.value:
         ps()
-    elif cmd == Cmd.RM.value:
-        rm(sys.argv[2])
     elif cmd == Cmd.RMI.value:
         rmi(sys.argv[2])
     else:
