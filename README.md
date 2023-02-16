@@ -3,7 +3,7 @@
 
 Implements the core functionality of the Docker container runtime using Python and Linux kernel primitives.
 
-Pocky uses no Python dependencies, but makes heavy use of Linux syscalls.
+Pocky has no Python dependencies, but makes heavy use of Linux syscalls.
 
 Inspired by [Bocker](https://github.com/p8952/bocker) and [Gocker](https://github.com/shuveb/containers-the-hard-way).
 
@@ -18,13 +18,12 @@ Inspired by [Bocker](https://github.com/p8952/bocker) and [Gocker](https://githu
 * `docker images`
 * `docker ps`
 * `docker run`
-* `docker rm` 
 * `docker rmi`
 
 ## System Prerequisites
 
 For executing Pocky:
-* Python 3.6
+* Python 3.6+
 
 For pulling images:
 * go
@@ -39,7 +38,7 @@ Tested on Ubuntu 18.04: may not work out of the box on other distributions.
 **Note:** If running Pocky, it is recommended to run it in a virtual machine. 
 Pocky must be run as root, and will arbitarily modify the file system and host networking stack. 
 
-Additionally, Pocky may not work correctly if there are ip routing rules with a higher priority than Pocky's routing rules. 
+Additionally, Pocky may not work correctly if there are pre-existing ip routing rules with a higher priority than Pocky's routing rules. 
 
 ## Example Usage
 
@@ -146,7 +145,7 @@ PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
 --- 8.8.8.8 ping statistics ---
 1 packets transmitted, 1 received, 0% packet loss, time 0ms
 rtt min/avg/max/mdev = 27.026/27.026/27.026/0.000 ms
-bash-4.2# ping 10.0.0.1 -c 1 # Host-machine
+bash-4.2# ping 10.0.0.1 -c 1
 PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.033 ms
 
@@ -157,11 +156,11 @@ rtt min/avg/max/mdev = 0.033/0.033/0.033/0.000 ms
 
 [From another terminal]
 
-### Pocky ps
+### Ps and Container Networking
 ```
 $ python3 pocky.py ps
 Container Id                             Image                          Cmd                           
-704a3178-0074-4b05-aa81-4c1927dcce21     centos:7                       /bin/bash 
+eaaa7b2d-cb47-411b-a21d-92468d6077d0     centos:7                       /bin/bash 
 
 $ ping 10.0.0.13 -c 1
 PING 10.0.0.13 (10.0.0.13) 56(84) bytes of data.
@@ -176,6 +175,6 @@ rtt min/avg/max/mdev = 0.091/0.091/0.091/0.000 ms
 ## Known Issues / TODO
 
 * Using only chroot for file-system isolation can be bypassed: use pivot_root as well
-* Proper handling around start/stop
+* Proper handling around startin
 * Port forwarding
 * Data volumes
