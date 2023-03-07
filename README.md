@@ -175,6 +175,6 @@ rtt min/avg/max/mdev = 0.091/0.091/0.091/0.000 ms
 ## Known Issues / TODO
 
 * Using only chroot for file-system isolation can be bypassed: use pivot_root as well
-* Proper handling around startin
+* Proper handling around starting and stopping containers: currently containers can be stopped by terminating the running process
 * Port forwarding
 * Data volumes
